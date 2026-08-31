@@ -385,6 +385,7 @@
 
                 <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-100 max-w-4xl mx-auto">
                     <form id="formPenanganan" onsubmit="savePenanganan(event)">
+                        <input type="hidden" id="penanganan_id">
                         
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                             <div>
@@ -630,6 +631,30 @@
     <!-- Toast Container -->
     <div id="toast-container"></div>
 
+    <!-- Modal Pilih Edit (Catatan Kasus vs Penanganan Kasus) -->
+    <div id="editChoiceModal" class="fixed inset-0 bg-black bg-opacity-50 z-[10000] hidden items-center justify-center fade-in">
+        <div class="bg-white rounded-xl shadow-2xl p-6 max-w-sm w-full mx-4 transform transition-all">
+            <div class="text-center mb-5">
+                <div class="w-12 h-12 bg-blue-100 text-primary rounded-full flex items-center justify-center mx-auto mb-3 text-xl">
+                    <i class="fas fa-edit"></i>
+                </div>
+                <h3 class="text-lg font-bold text-gray-900 mb-1">Pilih Data Edit</h3>
+                <p class="text-xs text-gray-500">Kasus ini memiliki data penanganan (pemanggilan orang tua).</p>
+            </div>
+            <div class="space-y-3">
+                <button id="btnEditCatatanKasus" class="w-full py-2.5 px-4 bg-primary hover:bg-blue-700 text-white rounded-lg font-medium text-sm transition flex items-center justify-center gap-2">
+                    <i class="fas fa-file-alt"></i> Edit Catatan Kasus
+                </button>
+                <button id="btnEditPenangananKasus" class="w-full py-2.5 px-4 bg-amber-500 hover:bg-amber-600 text-white rounded-lg font-medium text-sm transition flex items-center justify-center gap-2">
+                    <i class="fas fa-user-shield"></i> Edit Penanganan Kasus
+                </button>
+                <button onclick="closeEditChoiceModal()" class="w-full py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium transition">
+                    Batal
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Custom Confirm Modal -->
     <div id="confirmModal" class="fixed inset-0 bg-black bg-opacity-50 z-[10000] hidden items-center justify-center fade-in">
         <div class="bg-white rounded-xl shadow-2xl p-6 max-w-sm w-full mx-4 transform transition-all">
@@ -672,9 +697,15 @@
         // State sementara penanganan kasus (TTD & Foto)
         let currentPenangananFoto = [];
         let sigPadInstance = null;
+        let currentEditingPenangananId = null;
 
         function saveToDB(key) {
-            localStorage.setItem('sd_' + key, JSON.stringify(DB[key]));
+            try {
+                localStorage.setItem('sd_' + key, JSON.stringify(DB[key]));
+            } catch (e) {
+                console.error("Storage full or error saving " + key, e);
+                showToast('Penyimpanan lokal penuh. Disarankan hapus foto lama.', 'warning');
+            }
         }
 
         /* --- INTEGRASI SINKRONISASI API GAS --- */
@@ -706,7 +737,17 @@
                     if (resData.kelas) DB.kelas = resData.kelas;
                     if (resData.siswa) DB.siswa = resData.siswa;
                     if (resData.kasus) DB.kasus = resData.kasus;
-                    if (resData.penanganan) DB.penanganan = resData.penanganan;
+                    
+                    if (resData.penanganan) {
+                        // Smart merge: Pertahankan foto dari LocalStorage jika data remote kosong
+                        resData.penanganan.forEach(pRemote => {
+                            const pLocal = DB.penanganan.find(p => p.id === pRemote.id);
+                            if (pLocal && pLocal.foto_list && pLocal.foto_list.length > 0 && (!pRemote.foto_list || pRemote.foto_list.length === 0)) {
+                                pRemote.foto_list = pLocal.foto_list;
+                            }
+                        });
+                        DB.penanganan = resData.penanganan;
+                    }
 
                     saveToDB('sekolah');
                     saveToDB('kelas');
@@ -815,14 +856,15 @@
                 populateKelasDropdown('filterPreviewKelas');
                 renderPreviewSiswa();
             } else if (pageId === 'catatan-kasus') {
-                document.getElementById('kasus_tgl').valueAsDate = new Date();
                 populateKelasDropdown('kasus_pilih_kelas');
+                if (!document.getElementById('kasus_id').value) {
+                    document.getElementById('kasus_tgl').valueAsDate = new Date();
+                }
             } else if (pageId === 'penanganan-kasus') {
-                document.getElementById('penanganan_tgl').valueAsDate = new Date();
                 populateKelasDropdown('penanganan_filter_kelas');
-                document.getElementById('penanganan_list_kasus').innerHTML = '<p class="text-gray-500 text-sm">Pilih siswa terlebih dahulu.</p>';
-                currentPenangananFoto = [];
-                renderFotoPreview();
+                if (!document.getElementById('penanganan_id').value) {
+                    resetFormPenanganan();
+                }
             } else if (pageId === 'rekap-kasus') {
                 populateKelasDropdown('rekap_filter_kelas');
                 renderTableRekap();
@@ -915,8 +957,8 @@
                 reader.onload = function(event) {
                     const img = new Image();
                     img.onload = function() {
-                        // Kompresi Gambar Menggunakan Canvas Offscreen (Max dimension 600px)
-                        const maxDim = 600;
+                        // Kompresi Gambar Menggunakan Canvas Offscreen (Max dimension 400px agar super ringan)
+                        const maxDim = 400;
                         let w = img.width;
                         let h = img.height;
 
@@ -937,7 +979,7 @@
                         cCtx.drawImage(img, 0, 0, w, h);
                         
                         // Convert to lightweight JPEG Base64
-                        const base64Str = compressCanvas.toDataURL('image/jpeg', 0.65);
+                        const base64Str = compressCanvas.toDataURL('image/jpeg', 0.45);
                         currentPenangananFoto.push(base64Str);
                         renderFotoPreview();
                     };
@@ -1262,6 +1304,47 @@
             updateKasusSiswaDropdown();
         }
 
+        function editKasus(id) {
+            const k = DB.kasus.find(item => item.id === id);
+            if (!k) return showToast('Data kasus tidak ditemukan', 'error');
+
+            navigate('catatan-kasus');
+            
+            document.getElementById('kasus_id').value = k.id;
+            document.getElementById('kasus_tgl').value = k.tgl;
+            document.getElementById('kasus_siswa_id').value = k.siswa_id;
+            document.getElementById('kasus_siswa_nama').value = `${k.siswa_nama} (${k.kelas})`;
+            document.getElementById('kasus_siswa_kelas').value = k.kelas;
+            document.getElementById('kasus_pilih_kelas').value = k.kelas;
+            updateKasusSiswaDropdown();
+            document.getElementById('kasus_pilih_siswa').value = k.siswa_id;
+            document.getElementById('kasus_deskripsi').value = k.deskripsi;
+            document.getElementById('kasus_tindaklanjut').value = k.tindaklanjut;
+            
+            showToast('Mode Edit: Silakan perbarui data kasus');
+        }
+
+        async function hapusKasus(id) {
+            showConfirm('Hapus Catatan Kasus?', 'Data kasus ini akan dihapus dari sistem.', async () => {
+                await showLoader(300);
+                DB.kasus = DB.kasus.filter(k => k.id !== id);
+                saveToDB('kasus');
+                
+                // Hapus referensi dari penanganan jika ada
+                DB.penanganan.forEach(p => {
+                    if (p.kasus_ids) {
+                        p.kasus_ids = p.kasus_ids.filter(kId => kId !== id);
+                    }
+                });
+                saveToDB('penanganan');
+
+                sendToGAS('deleteKasus', { id: id });
+                renderTableRekap();
+                showToast('Catatan kasus berhasil dihapus');
+                hideLoader();
+            });
+        }
+
         // --- HALAMAN PENANGANAN KASUS ---
         function updatePenangananSiswaDropdown() {
             const kls = document.getElementById('penanganan_filter_kelas').value;
@@ -1306,22 +1389,179 @@
                 const dateObj = new Date(k.tgl);
                 const tglStr = dateObj.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric' });
                 
-                let isHandled = !!k.penanganan_id;
-                let disabledAttr = isHandled ? 'disabled checked' : '';
-                let bgClass = isHandled ? 'bg-gray-50 opacity-60' : 'hover:bg-amber-50 cursor-pointer';
-                let badgeText = isHandled ? `<span class="ml-2 inline-block text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-semibold border border-green-200">Telah Ditangani</span>` : '';
+                let isHandledByOther = k.penanganan_id && k.penanganan_id !== currentEditingPenangananId;
+                let isHandledByCurrent = k.penanganan_id && k.penanganan_id === currentEditingPenangananId;
+                
+                let checkedAttr = isHandledByCurrent ? 'checked' : '';
+                let disabledAttr = isHandledByOther ? 'disabled' : '';
+                let bgClass = isHandledByOther ? 'bg-gray-50 opacity-60 cursor-not-allowed' : 'hover:bg-amber-50 cursor-pointer';
+                let badgeText = isHandledByOther ? `<span class="ml-2 inline-block text-[10px] bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded font-semibold border border-gray-200">Penanganan Lain</span>` 
+                              : isHandledByCurrent ? `<span class="ml-2 inline-block text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-semibold border border-green-200">Sedang Diedit</span>` : '';
 
                 const div = document.createElement('div');
                 div.className = `flex items-start gap-3 p-3 border-b border-gray-100 last:border-0 transition ${bgClass}`;
                 div.innerHTML = `
-                    <input type="checkbox" name="chk_kasus" value="${k.id}" id="chk_${k.id}" class="mt-1 w-4 h-4 text-accent border-gray-300 rounded focus:ring-accent" ${disabledAttr}>
-                    <label for="chk_${k.id}" class="flex-1 text-sm ${isHandled ? 'cursor-not-allowed' : 'cursor-pointer'}">
+                    <input type="checkbox" name="chk_kasus" value="${k.id}" id="chk_${k.id}" class="mt-1 w-4 h-4 text-accent border-gray-300 rounded focus:ring-accent" ${checkedAttr} ${disabledAttr}>
+                    <label for="chk_${k.id}" class="flex-1 text-sm ${isHandledByOther ? 'cursor-not-allowed' : 'cursor-pointer'}">
                         <div class="font-bold text-gray-800 mb-1">${tglStr} ${badgeText}</div>
                         <div class="text-gray-600 line-clamp-2">${k.deskripsi}</div>
                     </label>
                 `;
                 container.appendChild(div);
             });
+        }
+
+        async function savePenanganan(e) {
+            e.preventDefault();
+            const checkedBoxes = document.querySelectorAll('input[name="chk_kasus"]:checked:not(:disabled)');
+            if(checkedBoxes.length === 0) {
+                return showToast('Pilih minimal 1 kasus yang ditangani (centang kotaknya)!', 'warning');
+            }
+
+            await showLoader(400);
+            
+            const existingId = document.getElementById('penanganan_id').value;
+            const pId = existingId || ('P_' + Date.now());
+            const checkedIds = Array.from(checkedBoxes).map(cb => cb.value);
+
+            const pData = {
+                id: pId,
+                tgl: document.getElementById('penanganan_tgl').value,
+                siswa_id: document.getElementById('penanganan_filter_siswa').value,
+                ortu: document.getElementById('penanganan_ortu').value,
+                hasil: document.getElementById('penanganan_hasil').value,
+                tindaklanjut: document.getElementById('penanganan_tindaklanjut').value,
+                kasus_ids: checkedIds,
+                foto_list: currentPenangananFoto,
+                timestamp: new Date().toISOString()
+            };
+
+            if (existingId) {
+                const idx = DB.penanganan.findIndex(p => p.id === existingId);
+                if (idx > -1) {
+                    DB.penanganan[idx] = pData;
+                } else {
+                    DB.penanganan.push(pData);
+                }
+                // Lepaskan kasus yang sebelumnya terhubung jika sekarang di-uncheck
+                DB.kasus.forEach(k => {
+                    if (k.penanganan_id === existingId && !checkedIds.includes(k.id)) {
+                        delete k.penanganan_id;
+                    }
+                });
+            } else {
+                DB.penanganan.push(pData);
+            }
+
+            // Update status kasus di DB
+            DB.kasus.forEach(k => {
+                if(checkedIds.includes(k.id)) {
+                    k.penanganan_id = pId;
+                }
+            });
+
+            saveToDB('penanganan');
+            saveToDB('kasus');
+            sendToGAS('savePenanganan', pData);
+
+            showToast(existingId ? 'Penanganan Kasus Berhasil Diperbarui' : 'Penanganan & Pemanggilan Ortu Berhasil Disimpan');
+            resetFormPenanganan();
+            hideLoader();
+
+            if (existingId) {
+                navigate('rekap-kasus');
+            }
+        }
+
+        function resetFormPenanganan() {
+            document.getElementById('penanganan_id').value = '';
+            currentEditingPenangananId = null;
+            document.getElementById('formPenanganan').reset();
+            currentPenangananFoto = [];
+            renderFotoPreview();
+            document.getElementById('penanganan_tgl').valueAsDate = new Date();
+            updatePenangananSiswaDropdown();
+        }
+
+        function handleEditClick(kasusId) {
+            const k = DB.kasus.find(item => item.id === kasusId);
+            if (!k) return showToast('Data kasus tidak ditemukan', 'error');
+
+            if (k.penanganan_id) {
+                document.getElementById('btnEditCatatanKasus').onclick = () => {
+                    closeEditChoiceModal();
+                    editKasus(kasusId);
+                };
+                document.getElementById('btnEditPenangananKasus').onclick = () => {
+                    closeEditChoiceModal();
+                    editPenanganan(k.penanganan_id);
+                };
+                document.getElementById('editChoiceModal').style.display = 'flex';
+            } else {
+                editKasus(kasusId);
+            }
+        }
+
+        function closeEditChoiceModal() {
+            document.getElementById('editChoiceModal').style.display = 'none';
+        }
+
+        function editPenanganan(pId) {
+            const p = DB.penanganan.find(item => item.id === pId);
+            if (!p) return showToast('Data penanganan tidak ditemukan', 'error');
+
+            currentEditingPenangananId = pId;
+            
+            // Set ID penanganan terlebih dahulu agar initPage mengenali mode edit
+            document.getElementById('penanganan_id').value = p.id;
+
+            navigate('penanganan-kasus');
+
+            // Pastikan dropdown kelas terisi
+            populateKelasDropdown('penanganan_filter_kelas');
+
+            document.getElementById('penanganan_tgl').value = p.tgl;
+            document.getElementById('penanganan_ortu').value = p.ortu || '';
+            document.getElementById('penanganan_hasil').value = p.hasil || '';
+            document.getElementById('penanganan_tindaklanjut').value = p.tindaklanjut || '';
+
+            // Otomatis pilih kelas & siswa yang bersangkutan
+            const s = DB.siswa.find(siswa => siswa.id === p.siswa_id);
+            if (s) {
+                document.getElementById('penanganan_filter_kelas').value = s.kelas;
+                updatePenangananSiswaDropdown();
+                document.getElementById('penanganan_filter_siswa').value = p.siswa_id;
+                loadKasusSiswaUntukPenanganan();
+            }
+
+            currentPenangananFoto = p.foto_list ? [...p.foto_list] : [];
+            renderFotoPreview();
+
+            showToast('Mode Edit Penanganan: Data siswa & kasus berhasil dimuat');
+        }
+
+        // --- HALAMAN REKAP KASUS ---
+        function updateRekapSiswaDropdown() {
+
+
+            document.getElementById('penanganan_id').value = p.id;
+            document.getElementById('penanganan_tgl').value = p.tgl;
+            document.getElementById('penanganan_ortu').value = p.ortu || '';
+            document.getElementById('penanganan_hasil').value = p.hasil || '';
+            document.getElementById('penanganan_tindaklanjut').value = p.tindaklanjut || '';
+
+            const s = DB.siswa.find(siswa => siswa.id === p.siswa_id);
+            if (s) {
+                document.getElementById('penanganan_filter_kelas').value = s.kelas;
+                updatePenangananSiswaDropdown();
+                document.getElementById('penanganan_filter_siswa').value = p.siswa_id;
+                loadKasusSiswaUntukPenanganan();
+            }
+
+            currentPenangananFoto = p.foto_list ? [...p.foto_list] : [];
+            renderFotoPreview();
+
+            showToast('Mode Edit Penanganan: Silakan perbarui data');
         }
 
         async function savePenanganan(e) {
@@ -1440,7 +1680,7 @@
                     </td>
                     <td class="px-4 py-3 text-center">
                         <div class="flex justify-center gap-2">
-                            <button onclick="editKasus('${k.id}')" class="text-blue-500 hover:text-blue-700 bg-blue-50 p-1.5 rounded" title="Edit"><i class="fas fa-edit"></i></button>
+                            <button onclick="handleEditClick('${k.id}')" class="text-blue-500 hover:text-blue-700 bg-blue-50 p-1.5 rounded" title="Edit"><i class="fas fa-edit"></i></button>
                             <button onclick="hapusKasus('${k.id}')" class="text-red-500 hover:text-red-700 bg-red-50 p-1.5 rounded" title="Hapus"><i class="fas fa-trash-alt"></i></button>
                         </div>
                     </td>
